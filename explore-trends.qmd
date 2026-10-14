@@ -1,0 +1,319 @@
+---
+title: "USDA Child Nutrition Program: Food Purchasing Trends"
+subtitle: "State of Origin Report, FY2018–FY2025"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    code-fold: true
+    theme: cosmo
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+library(tidyverse)
+library(readxl)
+library(scales)
+```
+
+## Data Loading
+
+The State of Origin reports changed format across years. Three loaders handle the three distinct schemas (FY18–21, FY22–23, FY24–25), then all eight files are harmonised into a single tidy table.
+
+```{r}
+#| label: load-data
+
+# FY18–FY21: 7 cols, 1-row title header to skip
+load_soo_early <- function(path, year) {
+  read_excel(path, skip = 1) |>
+    select(
+      origin_state  = 1, material_group = 3, material_code = 4,
+      material_desc = 5, qty_lbs = 6,        value_usd = 7
+    ) |>
+    mutate(
+      fiscal_year   = year,
+      material_code = as.character(material_code),
+      qty_lbs       = as.numeric(qty_lbs),
+      value_usd     = as.numeric(value_usd)
+    )
+}
+
+# FY22–FY23: 6 cols, no skip
+load_soo_mid <- function(path, year) {
+  read_excel(path) |>
+    select(
+      origin_state  = 1, material_group = 2, material_code = 3,
+      material_desc = 4, qty_lbs = 5,        value_usd = 6
+    ) |>
+    mutate(
+      fiscal_year   = year,
+      material_code = as.character(material_code),
+      qty_lbs       = as.numeric(qty_lbs),
+      value_usd     = as.numeric(value_usd)
+    )
+}
+
+# FY24–FY25: hierarchical format; state rows identified by NA material_code
+load_soo_late <- function(path, year) {
+  df <- read_excel(path)
+  names(df) <- c("state_or_product", "material_code", "qty_lbs", "value_usd")
+  df |>
+    mutate(
+      origin_state = if_else(is.na(material_code), state_or_product, NA_character_)
+    ) |>
+    fill(origin_state, .direction = "down") |>
+    filter(!is.na(material_code)) |>
+    mutate(
+      material_desc  = state_or_product,
+      material_group = NA_character_,
+      fiscal_year    = year,
+      material_code  = as.character(material_code),
+      qty_lbs        = as.numeric(qty_lbs),
+      value_usd      = as.numeric(value_usd)
+    ) |>
+    select(origin_state, material_group, material_code,
+           material_desc, qty_lbs, value_usd, fiscal_year)
+}
+
+soo_raw <- bind_rows(
+  load_soo_early("data/FY18 State of Origin CNP- FINAL.xlsx",                  2018),
+  load_soo_early("data/FY19 State of Origin CNP- FINAL.xlsx",                  2019),
+  load_soo_early("data/FY20 SOO CNP Only Data_filtered and formatted.xlsx",    2020),
+  load_soo_early("data/FY21SOOCNPProgramOnlyData.xls.xlsx",                    2021),
+  load_soo_mid(  "data/FY22StateofOrigin-CNP.xlsx",                            2022),
+  load_soo_mid(  "data/FY23StateofOrigin-CNP.xlsx",                            2023),
+  load_soo_late( "data/FY24StateofOriginReport-CNP.xlsx",                      2024),
+  load_soo_late( "data/FY25StateofOriginReport-CNP.xlsx",                      2025)
+)
+
+# Remove subtotal / grand total rows
+soo <- soo_raw |>
+  filter(
+    !str_detect(origin_state, regex("total", ignore_case = TRUE)),
+    !is.na(material_code)
+  )
+```
+
+After cleaning, the dataset contains **`r nrow(soo) |> comma()`** purchase records across eight fiscal years.
+
+::: {.callout-note}
+FY2024 and FY2025 source files use a condensed format that drops the material group (food category) column. Trend charts that rely on that column are therefore limited to FY2018–FY2023.
+:::
+
+---
+
+## Annual Totals
+
+```{r}
+#| label: annual-totals
+by_year <- soo |>
+  group_by(fiscal_year) |>
+  summarise(
+    total_lbs   = sum(qty_lbs,   na.rm = TRUE),
+    total_value = sum(value_usd, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(price_per_lb = total_value / total_lbs)
+```
+
+```{r}
+#| label: fig-lbs-by-year
+#| fig-cap: "Total pounds of food purchased through the CNP State of Origin programme, by fiscal year."
+
+ggplot(by_year, aes(x = fiscal_year, y = total_lbs)) +
+  geom_line() +
+  geom_point(size = 3) +
+  scale_x_continuous(breaks = 2018:2025) +
+  scale_y_continuous(labels = label_number(scale = 1e-9, suffix = "B lbs")) +
+  labs(
+    x = "Fiscal Year",
+    y = NULL,
+    title = "Total Pounds Purchased"
+  )
+```
+
+```{r}
+#| label: fig-value-by-year
+#| fig-cap: "Total dollar value of CNP food purchases by fiscal year."
+
+ggplot(by_year, aes(x = fiscal_year, y = total_value)) +
+  geom_line() +
+  geom_point(size = 3) +
+  scale_x_continuous(breaks = 2018:2025) +
+  scale_y_continuous(labels = label_dollar(scale = 1e-9, suffix = "B")) +
+  labs(
+    x = "Fiscal Year",
+    y = NULL,
+    title = "Total Dollar Value of Purchases"
+  )
+```
+
+```{r}
+#| label: fig-price-per-lb
+#| fig-cap: "Average cost per pound across all CNP food purchases."
+
+ggplot(by_year, aes(x = fiscal_year, y = price_per_lb)) +
+  geom_line() +
+  geom_point(size = 3) +
+  scale_x_continuous(breaks = 2018:2025) +
+  scale_y_continuous(labels = label_dollar(accuracy = 0.01)) +
+  labs(
+    x = "Fiscal Year",
+    y = NULL,
+    title = "Average Price per Pound"
+  )
+```
+
+---
+
+## Food Category Trends {#sec-categories}
+
+Material group (food category) is available for FY2018–FY2023 only.
+
+```{r}
+#| label: top-categories
+# Identify top 10 categories by total pounds purchased (FY18–FY23)
+top_groups <- soo |>
+  filter(!is.na(material_group)) |>
+  group_by(material_group) |>
+  summarise(total_lbs = sum(qty_lbs, na.rm = TRUE), .groups = "drop") |>
+  slice_max(total_lbs, n = 10) |>
+  pull(material_group)
+
+by_group_year <- soo |>
+  filter(material_group %in% top_groups) |>
+  group_by(fiscal_year, material_group) |>
+  summarise(
+    total_lbs   = sum(qty_lbs,   na.rm = TRUE),
+    total_value = sum(value_usd, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+#| label: fig-categories-lbs
+#| fig-cap: "Annual pounds purchased for the 10 largest food categories (FY2018–FY2023)."
+#| fig-height: 6
+
+ggplot(by_group_year, aes(x = fiscal_year, y = total_lbs, colour = material_group)) +
+  geom_line() +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = 2018:2023) +
+  scale_y_continuous(labels = label_number(scale = 1e-6, suffix = "M lbs")) +
+  labs(
+    x      = "Fiscal Year",
+    y      = NULL,
+    colour = "Food Category",
+    title  = "Pounds Purchased by Food Category"
+  ) +
+  theme(legend.position = "bottom", legend.text = element_text(size = 7)) +
+  guides(colour = guide_legend(nrow = 4))
+```
+
+```{r}
+#| label: fig-categories-share
+#| fig-cap: "Share of total pounds purchased for each of the top 10 food categories."
+#| fig-height: 6
+
+by_group_year |>
+  group_by(fiscal_year) |>
+  mutate(share = total_lbs / sum(total_lbs)) |>
+  ungroup() |>
+  ggplot(aes(x = fiscal_year, y = share, fill = material_group)) +
+  geom_area(position = "stack") +
+  scale_x_continuous(breaks = 2018:2023) +
+  scale_y_continuous(labels = label_percent()) +
+  labs(
+    x    = "Fiscal Year",
+    y    = NULL,
+    fill = "Food Category",
+    title = "Category Share of Total Pounds (Top 10)"
+  ) +
+  theme(legend.position = "bottom", legend.text = element_text(size = 7)) +
+  guides(fill = guide_legend(nrow = 4))
+```
+
+---
+
+## Geographic Patterns
+
+```{r}
+#| label: top-states
+by_state_year <- soo |>
+  group_by(fiscal_year, origin_state) |>
+  summarise(
+    total_lbs   = sum(qty_lbs,   na.rm = TRUE),
+    total_value = sum(value_usd, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# States with highest total pounds across all years
+top_states <- by_state_year |>
+  group_by(origin_state) |>
+  summarise(overall_lbs = sum(total_lbs), .groups = "drop") |>
+  slice_max(overall_lbs, n = 12) |>
+  pull(origin_state)
+```
+
+```{r}
+#| label: fig-top-states-bar
+#| fig-cap: "Top 12 states by total pounds supplied to the CNP over FY2018–FY2025."
+
+by_state_year |>
+  filter(origin_state %in% top_states) |>
+  group_by(origin_state) |>
+  summarise(total_lbs = sum(total_lbs), .groups = "drop") |>
+  mutate(origin_state = fct_reorder(origin_state, total_lbs)) |>
+  ggplot(aes(x = total_lbs, y = origin_state)) +
+  geom_col() +
+  scale_x_continuous(labels = label_number(scale = 1e-9, suffix = "B lbs")) +
+  labs(
+    x     = NULL,
+    y     = "Origin State",
+    title = "Total Pounds Supplied (FY2018–FY2025)"
+  )
+```
+
+```{r}
+#| label: fig-top-states-trend
+#| fig-cap: "Year-over-year pound volume for the top 12 supplying states."
+#| fig-height: 7
+
+by_state_year |>
+  filter(origin_state %in% top_states) |>
+  ggplot(aes(x = fiscal_year, y = total_lbs)) +
+  geom_line() +
+  geom_point(size = 1.5) +
+  facet_wrap(~origin_state, scales = "free_y", ncol = 3) +
+  scale_x_continuous(breaks = c(2018, 2021, 2025)) +
+  scale_y_continuous(labels = label_number(scale = 1e-6, suffix = "M")) +
+  labs(
+    x     = "Fiscal Year",
+    y     = "Pounds (millions)",
+    title = "Annual Purchase Volume — Top 12 States"
+  )
+```
+
+---
+
+## Summary Table
+
+```{r}
+#| label: tbl-annual-summary
+#| tbl-cap: "Annual CNP purchasing summary."
+
+by_year |>
+  mutate(
+    `Fiscal Year`    = fiscal_year,
+    `Total Lbs`      = comma(total_lbs),
+    `Total Value`    = dollar(total_value),
+    `Avg $/lb`       = dollar(price_per_lb, accuracy = 0.01)
+  ) |>
+  select(`Fiscal Year`, `Total Lbs`, `Total Value`, `Avg $/lb`) |>
+  knitr::kable()
+```
