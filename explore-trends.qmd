@@ -14,11 +14,10 @@ execute:
   message: false
 ---
 
-```{r}
-#| label: setup
-library(tidyverse)
-library(readxl)
-library(scales)
+```{r global_options, include=F, echo=F, error=F}
+library(here)
+library(knitr)
+source("../prep (May 2025).r")
 ```
 
 ## Data Loading
@@ -236,6 +235,108 @@ by_group_year |>
   ) +
   theme(legend.position = "bottom", legend.text = element_text(size = 7)) +
   guides(fill = guide_legend(nrow = 4))
+```
+
+---
+
+## Animal Protein Share {#sec-animal-protein}
+
+The material group field is absent from FY2024–FY2025 source files, but material codes are consistent across all years. A code-to-group lookup built from FY2018–FY2023 — supplemented with 11 manually assigned codes for new FY2024–FY2025 items — allows the classification to extend across the full period.
+
+```{r}
+#| label: build-lookup
+
+# Code → group lookup from years where material_group is present
+code_lookup <- soo |>
+  filter(!is.na(material_group), !is.na(material_code)) |>
+  distinct(material_code, material_group)
+
+# 11 new codes appearing only in FY2024–FY2025, classified manually
+manual_lookup <- tribble(
+  ~material_code, ~material_group,
+  "110151",  "FRUIT, FRESH",
+  "111751",  "EGG PRODUCTS",
+  "111761",  "CHICKEN, FROZEN",
+  "111750",  "YOGURT",
+  "111881",  "CHICKEN, COOKED",
+  "111790",  "FRUIT, JUICE",
+  "111893",  "TURKEY, COOKED",
+  "111895",  "FRUIT, FRESH",
+  "111900",  "TURKEY, COOKED",
+  "111882",  "TURKEY, COOKED",
+  "111860",  "BEANS, DRY"
+)
+
+full_lookup <- bind_rows(code_lookup, manual_lookup)
+
+# Fill in material_group for FY2024–FY2025 rows using the lookup
+soo_full <- soo |>
+  left_join(full_lookup |> rename(group_filled = material_group),
+            by = "material_code") |>
+  mutate(material_group = coalesce(material_group, group_filled)) |>
+  select(-group_filled)
+```
+
+```{r}
+#| label: classify-protein-types
+
+meat_groups <- c(
+  "BEEF, CANNED", "BEEF, COOKED", "BEEF, FRESH", "BEEF, GROUND", "BEEF, SPECIAL TRIM",
+  "CHICKEN, BULK", "CHICKEN, CANNED", "CHICKEN, COOKED", "CHICKEN, FROZEN",
+  "PORK, CANNED", "PORK, COOKED", "PORK, FROZEN",
+  "TURKEY, BULK", "TURKEY, COOKED", "TURKEY, FROZEN",
+  "HAM, FULLY COOKED", "FISH, CANNED", "FISH, FROZEN"
+)
+dairy_groups <- c(
+  "CHEESE PROC, KOSHER", "CHEESE, MOZZARELLA", "CHEESE, NATURAL AMER", "CHEESE, PROCESSED",
+  "MILK, UHT", "YOGURT"
+)
+egg_groups <- "EGG PRODUCTS"
+```
+
+```{r}
+#| label: fig-animal-protein-share
+#| fig-cap: "Share of total CNP purchase value attributable to each protein type, FY2018–FY2025."
+
+soo_full |>
+  filter(!is.na(material_group)) |>
+  group_by(fiscal_year) |>
+  summarise(
+    total     = sum(value_usd, na.rm = TRUE),
+    meat_val  = sum(value_usd[material_group %in% meat_groups],  na.rm = TRUE),
+    dairy_val = sum(value_usd[material_group %in% dairy_groups], na.rm = TRUE),
+    egg_val   = sum(value_usd[material_group %in% egg_groups],   na.rm = TRUE),
+    plant_val = total - meat_val - dairy_val - egg_val,
+    .groups   = "drop"
+  ) |>
+  pivot_longer(c(meat_val, dairy_val, egg_val, plant_val),
+               names_to = "type", values_to = "value") |>
+  mutate(
+    share = value / total,
+    type  = factor(type,
+                   levels = c("plant_val", "egg_val", "dairy_val", "meat_val"),
+                   labels = c("Plant-based", "Eggs", "Dairy", "Meat/Poultry/Fish"))
+  ) |>
+  ggplot(aes(x = fiscal_year, y = share, fill = type)) +
+  geom_area(position = "stack") +
+  scale_x_continuous(breaks = 2018:2025) +
+  scale_y_continuous(labels = label_percent(), expand = c(0, 0)) +
+  scale_fill_manual(
+    values = c(
+      "Meat/Poultry/Fish" = "#8B2020",
+      "Dairy"             = "#D4956A",
+      "Eggs"              = "#F2C96E",
+      "Plant-based"       = "#5A8A5A"
+    )
+  ) +
+  labs(
+    x    = "Fiscal Year",
+    y    = NULL,
+    fill = NULL,
+    title = "Share of USDA CNP Purchases by Protein Type",
+    subtitle = "Dollar value, FY2018–FY2025"
+  ) +
+  theme(legend.position = "bottom")
 ```
 
 ---
